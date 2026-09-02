@@ -1,0 +1,64 @@
+# NOTICE
+
+qwen3.8-flash-next-in-c is licensed under the Apache License 2.0 (see LICENSE).
+
+## Code provenance
+
+The byte-level BPE tokenizer foundation was adapted from
+[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c), copyright
+Fareed Khan and contributors, and is used under the Apache License 2.0. The
+retained implementation is tailored to the Qwen tokenizer stored in GGUF.
+
+The NFC normalization tables in `third_party/tok_nfc_data.h` are generated
+from the Unicode 9.0.0 Character Database. The Unicode data license is
+included in `third_party/UNICODE-LICENSE.txt`.
+
+The native HTTP API uses `jsmn.h` from zserge/jsmn revision
+`25647e692c7906b96ffd2b05ca54c097948e879c` under the MIT License, included in
+`third_party/JSMN-LICENSE.txt`.
+
+The Qwen3.8-Flash-Next function-call wire format follows the chat template
+embedded in the pinned model metadata and published by the Qwen team.
+The XML parser, schema-aware argument conversion,
+history rendering, OpenAI response adaptation, and SSE lifecycle are native
+project code and do not embed an external tool parser.
+
+GGUF, the Q2_K through Q6_K and Q8_0/Q8_K encodings, and IQ tensor formats are
+compatibility formats published by the ggml and llama.cpp projects. The fixed
+IQ codebook tables in `third_party/ggml-common.h`, along with packed low-bit decoding and
+kernel techniques used in `src/qwen38/qwen38_quant.c`, are adapted from ggml
+revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a` under its MIT license,
+included as `third_party/GGML-LICENSE.txt`. The bounded GGUF parser, runtime
+integration, row scheduling, and multi-token interfaces are project-local.
+ggml and llama.cpp are not linked or invoked at runtime. llama.cpp revision
+`3173a56471c1753650cd806694145ffd6dcace67` is used only as an external
+correctness oracle during validation.
+
+The split-GGUF loader, Qwen4Exp model graph, PLE row hashing, four-stream
+residual execution, Gated DeltaNet/QSA path, MoE scheduling, sampling,
+command-line runtime and resident API are native project code. Low-bit CPU
+kernel and tokenizer foundations were carried forward from
+[qwen3.8-27b-in-c](https://github.com/shyringo/qwen3.8-27b-in-c), with laptop
+MoE scheduling ideas adapted from
+[deepseek-v4-flash-0731-in-c](https://github.com/shyringo/deepseek-v4-flash-0731-in-c).
+No external inference engine is downloaded or invoked at runtime.
+
+## Model
+
+[Qwen3.8-Flash-Next](https://www.modelscope.cn/models/Qwen/Qwen3.8-Flash-Next)
+is released by the Qwen team under the Qwen Community License 1.0; see
+[`docs/MODEL_LICENSE.md`](docs/MODEL_LICENSE.md). The official
+architecture repository is
+[QwenLM/Qwen3.8-Flash-Next](https://github.com/QwenLM/Qwen3.8-Flash-Next).
+
+The pinned GGUFs are published by
+[Unsloth on ModelScope](https://www.modelscope.cn/models/unsloth/Qwen3.8-Flash-Next-GGUF).
+
+Model weights are downloaded into the user's cache and are not redistributed
+in this repository.
+
+## Trademarks
+
+This project is not affiliated with, endorsed by, or sponsored by the Qwen
+team, Unsloth, or the kimi-k3-in-c project. Their names and model names identify
+the checkpoint and credited source material used by this project.

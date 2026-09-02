@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible runtime, build, API or correctness problem
+title: "[bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove private prompt content and credentials from logs before submitting.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations: {required: true}
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include the exact command and the smallest prompt or API request that reproduces the problem.
+      render: shell
+    validations: {required: true}
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit SHA, CPU, installed/visible RAM, OS or WSL version, compiler, context and thread settings.
+    validations: {required: true}
+  - type: input
+    id: model
+    attributes:
+      label: Model shard and SHA-256
+      placeholder: Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf, sha256 ...
+    validations: {required: true}
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed credentials and private prompt content.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true
+
