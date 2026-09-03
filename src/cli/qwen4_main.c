@@ -615,7 +615,10 @@ static int serve(Q4Model *model, Q38Tokenizer *tokenizer,
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) {
+        close(server);
+        return 0;
+    }
     address.sin_port = htons((uint16_t)options->server_port);
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) != 0 ||
         listen(server, 8) != 0) { close(server); return 0; }
