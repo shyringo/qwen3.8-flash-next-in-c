@@ -18,6 +18,9 @@ int q4_model_forward_token(Q4Model *model, uint32_t token_id,
                            const float **logits);
 int q4_model_prefill(Q4Model *model, const uint32_t *tokens,
                      uint32_t token_count, const float **logits);
+int q4_model_verify_greedy(Q4Model *model, const uint32_t *tokens,
+                           uint32_t token_count, uint32_t *next_ids,
+                           const float **logits);
 
 uint32_t q4_model_vocab_size(const Q4Model *model);
 uint32_t q4_model_layer_count(const Q4Model *model);

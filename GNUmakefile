@@ -43,7 +43,8 @@ TOOL_BINS := $(BIN)/qwen4-meta-inspect \
 	$(BIN)/qwen4-contract-probe \
 	$(BIN)/qwen4-logits-probe \
 	$(BIN)/qwen4-state-probe \
-	$(BIN)/qwen4-qsa-probe
+	$(BIN)/qwen4-qsa-probe \
+	$(BIN)/qwen4-batch-bench
 
 .PHONY: all test tools strict portable sanitize clean
 
@@ -107,6 +108,9 @@ $(BIN)/qwen4-state-probe: src/cli/qwen4_state_probe.c $(Q4_MODEL_OBJ) $(Q4_OPS_O
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/qwen4-qsa-probe: src/cli/qwen4_qsa_probe.c $(Q4_MODEL_OBJ) $(Q4_OPS_OBJ) $(QUANT_OBJ) $(Q4_GGUF_OBJ) $(GGUF_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/qwen4-batch-bench: src/cli/qwen4_batch_bench.c $(Q4_MODEL_OBJ) $(Q4_OPS_OBJ) $(QUANT_OBJ) $(Q4_GGUF_OBJ) $(GGUF_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/qwen4: src/cli/qwen4_main.c $(Q4_MODEL_OBJ) $(Q4_OPS_OBJ) $(QUANT_OBJ) $(TOKENIZER_OBJ) $(SAMPLER_OBJ) $(Q4_GGUF_OBJ) $(GGUF_OBJ) $(HTTP_OBJ) $(TOOL_OBJ) | $(BIN)

@@ -158,6 +158,8 @@ typedef struct {
     float *batch_beta;
     float *batch_alpha;
     float *batch_attention;
+    float *batch_key;
+    float *batch_value;
     float *batch_branch;
     float *batch_router;
     float *batch_moe_gate;
@@ -166,6 +168,7 @@ typedef struct {
     float *batch_moe_output;
     float *batch_routed_output;
     float *batch_shared_output;
+    float *batch_logits;
     float *union_gate;
     float *union_up;
     float *union_hidden;
@@ -712,7 +715,8 @@ static int hc_mix_batch(Q4Model *model, const Q4HCWeights *hc,
         }
     }
     if (!project_batch(model, s->batch_hc_gate, s->batch_hc_low,
-                       batch_size, Q4_HC_RANK, hc->up) ||
+                       batch_size, Q4_HC_RANK, hc->up)) return 0;
+    if (hc->inject &&
         !q38_tensor_gemm_f32(s->batch_inject, s->batch_hc_norm,
                              batch_size, Q4_HC_DIM, hc->inject)) return 0;
     for (uint32_t token = 0; token < batch_size; ++token) {
@@ -839,6 +843,114 @@ static void linear_attention_state(Q4Model *model, uint32_t layer,
             head_out[i] *= sigmoidf_local(output_gate[i]);
     }
     trace_vector("final_output", layer, attention, Q4_LINEAR_VALUE);
+}
+
+static void linear_attention_state_batch(Q4Model *model, uint32_t layer,
+                                         float *wide0, float *wide1,
+                                         float *beta, float *alpha,
+                                         float *attention,
+                                         uint32_t batch_size)
+{
+    const Q4LinearWeights *w = &model->layer[layer].linear;
+    const uint32_t recurrent = layer - (layer + 1u) / 4u;
+    float *conv_state = model->conv_state +
+        (uint64_t)recurrent * Q4_LINEAR_QKV * 3u;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (uint32_t channel = 0; channel < Q4_LINEAR_QKV; ++channel) {
+        float *state = conv_state + (uint64_t)channel * 3u;
+        const float *kernel = (const float *)(w->conv->data +
+                              (uint64_t)channel * 4u * sizeof(float));
+        for (uint32_t token = 0; token < batch_size; ++token) {
+            float *token_wide = wide0 +
+                                (uint64_t)token * Q4_LINEAR_QKV;
+            const float input = token_wide[channel];
+            const float value = state[0] * kernel[0] +
+                                state[1] * kernel[1] +
+                                state[2] * kernel[2] + input * kernel[3];
+            state[0] = state[1];
+            state[1] = state[2];
+            state[2] = input;
+            token_wide[channel] = value * sigmoidf_local(value);
+        }
+    }
+    for (uint32_t token = 0; token < batch_size; ++token) {
+        float *token_wide = wide0 + (uint64_t)token * Q4_LINEAR_QKV;
+        float *query = token_wide;
+        float *key = query + Q4_LINEAR_KEY_HEADS * Q4_HEAD_DIM;
+        float *token_beta = beta + (uint64_t)token * Q4_LINEAR_HEADS;
+        float *token_alpha = alpha + (uint64_t)token * Q4_LINEAR_HEADS;
+        for (uint32_t head = 0; head < Q4_LINEAR_KEY_HEADS; ++head) {
+            l2norm(query + (uint64_t)head * Q4_HEAD_DIM, Q4_HEAD_DIM);
+            l2norm(key + (uint64_t)head * Q4_HEAD_DIM, Q4_HEAD_DIM);
+        }
+        for (uint32_t head = 0; head < Q4_LINEAR_HEADS; ++head) {
+            token_beta[head] = sigmoidf_local(token_beta[head]);
+            token_alpha[head] = scalar(w->a, head) *
+                softplusf_local(token_alpha[head] + scalar(w->dt, head));
+        }
+    }
+    float *delta = model->delta_state + (uint64_t)recurrent *
+        Q4_LINEAR_HEADS * Q4_HEAD_DIM * Q4_HEAD_DIM;
+    const float query_scale = 1.0f / sqrtf((float)Q4_HEAD_DIM);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (uint32_t vh = 0; vh < Q4_LINEAR_HEADS; ++vh) {
+        float *state = delta + (uint64_t)vh * Q4_HEAD_DIM * Q4_HEAD_DIM;
+        const uint32_t kh = vh % Q4_LINEAR_KEY_HEADS;
+        for (uint32_t token = 0; token < batch_size; ++token) {
+            float *token_wide = wide0 +
+                                (uint64_t)token * Q4_LINEAR_QKV;
+            const float *query = token_wide +
+                (uint64_t)kh * Q4_HEAD_DIM;
+            const float *key = token_wide +
+                Q4_LINEAR_KEY_HEADS * Q4_HEAD_DIM +
+                (uint64_t)kh * Q4_HEAD_DIM;
+            const float *value = token_wide +
+                2u * Q4_LINEAR_KEY_HEADS * Q4_HEAD_DIM +
+                (uint64_t)vh * Q4_HEAD_DIM;
+            float *head_out = attention +
+                ((uint64_t)token * Q4_LINEAR_HEADS + vh) * Q4_HEAD_DIM;
+            const float token_beta = beta[
+                (uint64_t)token * Q4_LINEAR_HEADS + vh];
+            const float decay = expf(alpha[
+                (uint64_t)token * Q4_LINEAR_HEADS + vh]);
+#if defined(__AVX2__) && defined(__FMA__)
+            for (uint32_t column = 0; column < Q4_HEAD_DIM; column += 8u)
+                delta_columns8(state + column, key, value + column,
+                               token_beta, query, decay, query_scale,
+                               head_out + column);
+#else
+            for (uint32_t column = 0; column < Q4_HEAD_DIM; ++column) {
+                float *state_column = state +
+                                      (uint64_t)column * Q4_HEAD_DIM;
+                const float prediction = decay_dot128(
+                    state_column, decay, key);
+                const float change = (value[column] - prediction) *
+                                     token_beta;
+                head_out[column] = update_dot128(
+                    state_column, key, change, query) * query_scale;
+            }
+#endif
+        }
+    }
+    for (uint32_t token = 0; token < batch_size; ++token) {
+        float *token_attention = attention +
+            (uint64_t)token * Q4_LINEAR_VALUE;
+        const float *token_gate = wide1 +
+            (uint64_t)token * Q4_LINEAR_VALUE;
+        for (uint32_t head = 0; head < Q4_LINEAR_HEADS; ++head) {
+            float *head_out = token_attention +
+                              (uint64_t)head * Q4_HEAD_DIM;
+            rmsnorm(head_out, head_out, w->norm, Q4_HEAD_DIM);
+            const float *output_gate = token_gate +
+                (uint64_t)head * Q4_HEAD_DIM;
+            for (uint32_t i = 0; i < Q4_HEAD_DIM; ++i)
+                head_out[i] *= sigmoidf_local(output_gate[i]);
+        }
+    }
 }
 
 static int linear_attention(Q4Model *model, uint32_t layer,
@@ -1009,9 +1121,14 @@ static int linear_attention_batch(Q4Model *model, uint32_t layer,
         apply_scale(wide1, Q4_LINEAR_VALUE, w->gate_scale, 0u);
         apply_scale(beta, Q4_LINEAR_HEADS, w->beta_scale, 0u);
         apply_scale(alpha, Q4_LINEAR_HEADS, w->alpha_scale, 0u);
-        linear_attention_state(model, layer, wide0, wide1,
-                               beta, alpha, attention);
+        if (getenv("Q4_DISABLE_GDN_BATCH_STATE"))
+            linear_attention_state(model, layer, wide0, wide1,
+                                   beta, alpha, attention);
     }
+    if (!getenv("Q4_DISABLE_GDN_BATCH_STATE"))
+        linear_attention_state_batch(model, layer, s->batch_wide0,
+            s->batch_wide1, s->batch_beta, s->batch_alpha,
+            s->batch_attention, batch_size);
     if (!project_batch(model, output, s->batch_attention, batch_size,
                        Q4_LINEAR_VALUE, w->out)) return 0;
     for (uint32_t token = 0; token < batch_size; ++token)
@@ -1241,6 +1358,112 @@ static int full_attention(Q4Model *model, uint32_t layer, uint32_t position,
     return 1;
 }
 
+static int full_attention_batch(Q4Model *model, uint32_t layer,
+                                uint32_t base_position, const float *input,
+                                float *output, uint32_t batch_size)
+{
+    Q4Scratch *s = &model->scratch;
+    const Q4AttentionWeights *w = &model->layer[layer].attention;
+    if (model->context_length > 2048u || batch_size != Q4_BATCH_TILE) {
+        for (uint32_t token = 0; token < batch_size; ++token)
+            if (!full_attention(model, layer, base_position + token,
+                                input + (uint64_t)token * Q4_HIDDEN,
+                                output + (uint64_t)token * Q4_HIDDEN)) return 0;
+        return 1;
+    }
+    if (!q38_quantize_q8_k(s->batch_quantized, input,
+                           (uint64_t)batch_size * Q4_HIDDEN) ||
+        !project_batch_prequantized(s->batch_wide0, input,
+                                    s->batch_quantized, batch_size,
+                                    Q4_HIDDEN, w->q) ||
+        !project_batch_prequantized(s->batch_key, input,
+                                    s->batch_quantized, batch_size,
+                                    Q4_HIDDEN, w->k) ||
+        !project_batch_prequantized(s->batch_value, input,
+                                    s->batch_quantized, batch_size,
+                                    Q4_HIDDEN, w->v)) return 0;
+    const uint32_t full = layer / 4u;
+    for (uint32_t token = 0; token < batch_size; ++token) {
+        const uint32_t position = base_position + token;
+        float *wide = s->batch_wide0 +
+                      (uint64_t)token * Q4_ATTN_Q_GATE;
+        float *key = s->batch_key + (uint64_t)token * Q4_ATTN_KV;
+        float *value = s->batch_value + (uint64_t)token * Q4_ATTN_KV;
+        apply_scale(wide, Q4_ATTN_Q_GATE, w->q_scale, 0u);
+        apply_scale(key, Q4_ATTN_KV, w->k_scale, 0u);
+        apply_scale(value, Q4_ATTN_KV, w->v_scale, 0u);
+        for (uint32_t head = 0; head < Q4_ATTN_HEADS; ++head)
+            rmsnorm(wide + (uint64_t)head * 2u * Q4_ATTN_HEAD_DIM,
+                    wide + (uint64_t)head * 2u * Q4_ATTN_HEAD_DIM,
+                    w->q_norm, Q4_ATTN_HEAD_DIM);
+        for (uint32_t head = 0; head < Q4_ATTN_KV_HEADS; ++head)
+            rmsnorm(key + (uint64_t)head * Q4_ATTN_HEAD_DIM,
+                    key + (uint64_t)head * Q4_ATTN_HEAD_DIM,
+                    w->k_norm, Q4_ATTN_HEAD_DIM);
+        rope_stride(wide, Q4_ATTN_HEADS,
+                    2u * Q4_ATTN_HEAD_DIM, position);
+        rope(key, Q4_ATTN_KV_HEADS, position);
+        const uint64_t cache =
+            ((uint64_t)full * model->context_length + position) * Q4_ATTN_KV;
+        memcpy(model->key_cache + cache, key, Q4_ATTN_KV * sizeof(float));
+        memcpy(model->value_cache + cache, value, Q4_ATTN_KV * sizeof(float));
+    }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (uint32_t head = 0; head < Q4_ATTN_HEADS; ++head) {
+        const uint32_t kv = head /
+            (Q4_ATTN_HEADS / Q4_ATTN_KV_HEADS);
+        float *scores = s->scores + (uint64_t)head * model->context_length;
+        for (uint32_t token = 0; token < batch_size; ++token) {
+            const uint32_t position = base_position + token;
+            const float *wide = s->batch_wide0 +
+                                (uint64_t)token * Q4_ATTN_Q_GATE;
+            const float *query = wide +
+                (uint64_t)head * 2u * Q4_ATTN_HEAD_DIM;
+            float maximum = -INFINITY;
+            for (uint32_t pos = 0; pos <= position; ++pos) {
+                const uint64_t row =
+                    ((uint64_t)full * model->context_length + pos) *
+                    Q4_ATTN_KV + (uint64_t)kv * Q4_ATTN_HEAD_DIM;
+                float score = 0.0f;
+                for (uint32_t i = 0; i < Q4_ATTN_HEAD_DIM; ++i)
+                    score = fmaf(query[i], model->key_cache[row + i], score);
+                score /= sqrtf((float)Q4_ATTN_HEAD_DIM);
+                scores[pos] = score;
+                if (score > maximum) maximum = score;
+            }
+            float denominator = 0.0f;
+            for (uint32_t pos = 0; pos <= position; ++pos) {
+                scores[pos] = expf(scores[pos] - maximum);
+                denominator += scores[pos];
+            }
+            float *head_out = s->batch_attention +
+                ((uint64_t)token * Q4_ATTN_HEADS + head) * Q4_ATTN_HEAD_DIM;
+            memset(head_out, 0, Q4_ATTN_HEAD_DIM * sizeof(float));
+            for (uint32_t pos = 0; pos <= position; ++pos) {
+                const uint64_t row =
+                    ((uint64_t)full * model->context_length + pos) *
+                    Q4_ATTN_KV + (uint64_t)kv * Q4_ATTN_HEAD_DIM;
+                const float probability = scores[pos] / denominator;
+                for (uint32_t i = 0; i < Q4_ATTN_HEAD_DIM; ++i)
+                    head_out[i] = fmaf(probability,
+                        model->value_cache[row + i], head_out[i]);
+            }
+            const float *gate = wide +
+                (uint64_t)head * 2u * Q4_ATTN_HEAD_DIM + Q4_ATTN_HEAD_DIM;
+            for (uint32_t i = 0; i < Q4_ATTN_HEAD_DIM; ++i)
+                head_out[i] *= sigmoidf_local(gate[i]);
+        }
+    }
+    if (!project_batch(model, output, s->batch_attention, batch_size,
+                       Q4_ATTN_OUT, w->out)) return 0;
+    for (uint32_t token = 0; token < batch_size; ++token)
+        apply_scale(output + (uint64_t)token * Q4_HIDDEN,
+                    Q4_HIDDEN, w->out_scale, 0u);
+    return 1;
+}
+
 static int moe(Q4Model *model, uint32_t layer,
                const float *input, float *output)
 {
@@ -1435,21 +1658,10 @@ static int moe_batch_expert(Q4Model *model, const Q4LayerWeights *w,
     return 1;
 }
 
-static int moe_batch(Q4Model *model, uint32_t layer, const float *input,
-                     float *output, uint32_t batch_size)
+static int moe_batch_shared(Q4Model *model, const Q4LayerWeights *w,
+                            const float *input, uint32_t batch_size)
 {
     Q4Scratch *s = &model->scratch;
-    const Q4LayerWeights *w = &model->layer[layer];
-    int experts[Q4_BATCH_TILE][Q4_ACTIVE_EXPERTS];
-    float route_weights[Q4_BATCH_TILE][Q4_ACTIVE_EXPERTS];
-    if (!project_batch(model, s->batch_router, input, batch_size,
-                       Q4_HIDDEN, w->router) ||
-        !q38_quantize_q8_k(s->batch_quantized, input,
-                           (uint64_t)batch_size * Q4_HIDDEN)) return 0;
-    for (uint32_t token = 0; token < batch_size; ++token)
-        q4_router_topk(experts[token], route_weights[token],
-                       s->batch_router + (uint64_t)token * Q4_EXPERTS);
-
     if (!project_batch(model, s->batch_moe_gate, input, batch_size,
                        Q4_HIDDEN, w->shared_gate) ||
         !project_batch(model, s->batch_moe_up, input, batch_size,
@@ -1471,6 +1683,23 @@ static int moe_batch(Q4Model *model, uint32_t layer, const float *input,
     for (uint32_t token = 0; token < batch_size; ++token)
         apply_scale(s->batch_shared_output + (uint64_t)token * Q4_HIDDEN,
                     Q4_HIDDEN, w->shared_down_scale, 0u);
+    return 1;
+}
+
+static int moe_batch(Q4Model *model, uint32_t layer, const float *input,
+                     float *output, uint32_t batch_size)
+{
+    Q4Scratch *s = &model->scratch;
+    const Q4LayerWeights *w = &model->layer[layer];
+    int experts[Q4_BATCH_TILE][Q4_ACTIVE_EXPERTS];
+    float route_weights[Q4_BATCH_TILE][Q4_ACTIVE_EXPERTS];
+    if (!project_batch(model, s->batch_router, input, batch_size,
+                       Q4_HIDDEN, w->router) ||
+        !q38_quantize_q8_k(s->batch_quantized, input,
+                           (uint64_t)batch_size * Q4_HIDDEN)) return 0;
+    for (uint32_t token = 0; token < batch_size; ++token)
+        q4_router_topk(experts[token], route_weights[token],
+                       s->batch_router + (uint64_t)token * Q4_EXPERTS);
 
     uint32_t union_experts[Q4_MOE_UNION_MAX];
     uint32_t union_count = 0u;
@@ -1484,7 +1713,7 @@ static int moe_batch(Q4Model *model, uint32_t layer, const float *input,
         }
     }
     if (!getenv("Q4_BATCH_MOE_SERIAL")) {
-        int success[Q4_MOE_UNION_MAX] = {0};
+        int success[Q4_MOE_UNION_MAX + 1u] = {0};
         int expert_threads = 11;
         const char *thread_env = getenv("Q4_EXPERT_THREADS");
         if (thread_env && *thread_env) {
@@ -1496,13 +1725,17 @@ static int moe_batch(Q4Model *model, uint32_t layer, const float *input,
 #else
         (void)expert_threads;
 #endif
-        for (uint32_t task = 0; task < union_count; ++task)
-            success[task] = moe_batch_expert(
-                model, w, experts, batch_size, union_experts[task], task);
-        for (uint32_t task = 0; task < union_count; ++task)
+        for (uint32_t task = 0; task <= union_count; ++task)
+            success[task] = task == union_count
+                ? moe_batch_shared(model, w, input, batch_size)
+                : moe_batch_expert(model, w, experts, batch_size,
+                                   union_experts[task], task);
+        for (uint32_t task = 0; task <= union_count; ++task)
             if (!success[task]) return 0;
         goto routed_ready;
     }
+
+    if (!moe_batch_shared(model, w, input, batch_size)) return 0;
 
     const uint64_t input_blocks = Q4_HIDDEN / 256u;
     Q38Q8KBlock compact_quantized[Q4_BATCH_TILE * (Q4_HIDDEN / 256u)];
@@ -1711,12 +1944,12 @@ static int layer_forward_batch(Q4Model *model, uint32_t layer,
         started = now_seconds();
     }
     if ((layer + 1u) % 4u == 0u) {
+        if (!full_attention_batch(model, layer, base_position,
+                                  s->batch_mixed, s->batch_branch,
+                                  batch_size)) return 0;
         for (uint32_t token = 0; token < batch_size; ++token) {
-            memcpy(s->mixed, s->batch_mixed + (uint64_t)token * Q4_HIDDEN,
-                   Q4_HIDDEN * sizeof(float));
-            if (!full_attention(model, layer, base_position + token,
-                                s->mixed, s->branch)) return 0;
-            q4_hc_combine(residual[token], s->branch,
+            q4_hc_combine(residual[token],
+                          s->batch_branch + (uint64_t)token * Q4_HIDDEN,
                           s->batch_inject + (uint64_t)token * Q4_HC,
                           Q4_HIDDEN, Q4_HC);
         }
@@ -1793,11 +2026,13 @@ static int alloc_state(Q4Model *model)
     ALLOC(s->batch_hc_gate, Q4_BATCH_TILE * Q4_HC_DIM);
     ALLOC(s->batch_mixed, Q4_BATCH_TILE * Q4_HIDDEN);
     ALLOC(s->batch_inject, Q4_BATCH_TILE * Q4_HC);
-    ALLOC(s->batch_wide0, Q4_BATCH_TILE * Q4_LINEAR_QKV);
+    ALLOC(s->batch_wide0, Q4_BATCH_TILE * Q4_ATTN_Q_GATE);
     ALLOC(s->batch_wide1, Q4_BATCH_TILE * Q4_LINEAR_VALUE);
     ALLOC(s->batch_beta, Q4_BATCH_TILE * Q4_LINEAR_HEADS);
     ALLOC(s->batch_alpha, Q4_BATCH_TILE * Q4_LINEAR_HEADS);
     ALLOC(s->batch_attention, Q4_BATCH_TILE * Q4_LINEAR_VALUE);
+    ALLOC(s->batch_key, Q4_BATCH_TILE * Q4_ATTN_KV);
+    ALLOC(s->batch_value, Q4_BATCH_TILE * Q4_ATTN_KV);
     ALLOC(s->batch_branch, Q4_BATCH_TILE * Q4_HIDDEN);
     ALLOC(s->batch_router, Q4_BATCH_TILE * Q4_EXPERTS);
     ALLOC(s->batch_moe_gate, Q4_BATCH_TILE * Q4_EXPERT_FFN);
@@ -1807,6 +2042,7 @@ static int alloc_state(Q4Model *model)
     ALLOC(s->batch_routed_output, Q4_BATCH_TILE * Q4_ACTIVE_EXPERTS *
           Q4_HIDDEN);
     ALLOC(s->batch_shared_output, Q4_BATCH_TILE * Q4_HIDDEN);
+    ALLOC(s->batch_logits, Q4_BATCH_TILE * Q4_VOCAB);
     ALLOC(s->union_gate, Q4_MOE_UNION_MAX * Q4_BATCH_TILE * Q4_EXPERT_FFN);
     ALLOC(s->union_up, Q4_MOE_UNION_MAX * Q4_BATCH_TILE * Q4_EXPERT_FFN);
     ALLOC(s->union_hidden, Q4_MOE_UNION_MAX * Q4_BATCH_TILE * Q4_EXPERT_FFN);
@@ -1952,10 +2188,12 @@ void q4_model_close(Q4Model *model)
     FREE(s->batch_mixed); FREE(s->batch_inject); free(s->batch_quantized);
     FREE(s->batch_wide0); FREE(s->batch_wide1);
     FREE(s->batch_beta); FREE(s->batch_alpha);
-    FREE(s->batch_attention); FREE(s->batch_branch);
+    FREE(s->batch_attention); FREE(s->batch_key); FREE(s->batch_value);
+    FREE(s->batch_branch);
     FREE(s->batch_router); FREE(s->batch_moe_gate); FREE(s->batch_moe_up);
     FREE(s->batch_moe_hidden); FREE(s->batch_moe_output);
     FREE(s->batch_routed_output); FREE(s->batch_shared_output);
+    FREE(s->batch_logits);
     FREE(s->union_gate); FREE(s->union_up); FREE(s->union_hidden);
     FREE(s->union_output); free(s->union_quantized);
     FREE(s->router); FREE(s->expert_gate); FREE(s->expert_up);
@@ -2249,6 +2487,71 @@ int q4_model_prefill(Q4Model *model, const uint32_t *tokens,
                 "BATCH_PROFILE tokens=%u hc=%.6f attention=%.6f moe=%.6f\n",
                 token_count, model->time_batch_hc,
                 model->time_batch_attention, model->time_batch_moe);
+    *logits = model->scratch.logits;
+    return 1;
+}
+
+int q4_model_verify_greedy(Q4Model *model, const uint32_t *tokens,
+                           uint32_t token_count, uint32_t *next_ids,
+                           const float **logits)
+{
+    if (!model || !tokens || !token_count || token_count > Q4_BATCH_TILE ||
+        !next_ids || !logits ||
+        token_count > model->context_length - model->position) return 0;
+    float *residuals = (float *)malloc(
+        (uint64_t)token_count * Q4_HC_DIM * sizeof(float));
+    if (!residuals) return 0;
+    for (uint32_t token = 0; token < token_count; ++token) {
+        float *residual = residuals + (uint64_t)token * Q4_HC_DIM;
+        if (!q38_tensor_row_f32(model->scratch.mixed, model->embedding,
+                                tokens[token])) {
+            free(residuals);
+            return 0;
+        }
+        for (uint32_t group = 0; group < Q4_HC; ++group)
+            memcpy(residual + (uint64_t)group * Q4_HIDDEN,
+                   model->scratch.mixed, Q4_HIDDEN * sizeof(float));
+    }
+    const uint32_t base_position = model->position;
+    for (uint32_t layer = 0; layer < Q4_LAYERS; ++layer) {
+        float *chunk[Q4_BATCH_TILE];
+        for (uint32_t token = 0; token < token_count; ++token) {
+            chunk[token] = residuals + (uint64_t)token * Q4_HC_DIM;
+            if (layer == 1u && !ple(model, tokens[token], chunk[token])) {
+                free(residuals);
+                return 0;
+            }
+        }
+        if (!layer_forward_batch(model, layer, chunk,
+                                 base_position, token_count)) {
+            fprintf(stderr, "qwen4: batch verifier failed at layer %u\n", layer);
+            free(residuals);
+            return 0;
+        }
+    }
+    float *chunk[Q4_BATCH_TILE];
+    for (uint32_t token = 0; token < token_count; ++token)
+        chunk[token] = residuals + (uint64_t)token * Q4_HC_DIM;
+    int ok = hc_mix_batch(model, &model->output_hc, chunk, token_count) &&
+             project_batch(model, model->scratch.batch_logits,
+                           model->scratch.batch_mixed, token_count,
+                           Q4_HIDDEN, model->output);
+    if (!ok) fprintf(stderr, "qwen4: batch verifier output head failed\n");
+    for (uint32_t token = 0; ok && token < token_count; ++token) {
+        float *row = model->scratch.batch_logits +
+                     (uint64_t)token * Q4_VOCAB;
+        apply_scale(row, Q4_VOCAB, model->output_scale, 0u);
+        uint32_t best = 0u;
+        for (uint32_t id = 1u; id < Q4_VOCAB; ++id)
+            if (row[id] > row[best]) best = id;
+        next_ids[token] = best;
+        if (token + 1u == token_count)
+            memcpy(model->scratch.logits, row,
+                   Q4_VOCAB * sizeof(float));
+    }
+    free(residuals);
+    if (!ok) return 0;
+    model->position += token_count;
     *logits = model->scratch.logits;
     return 1;
 }

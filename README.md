@@ -1,16 +1,16 @@
-<h1 align="center">Qwen3.8-Flash-Next in C: Laptop CPU Inference</h1>
+<h1 align="center">Qwen3.8-Flash-Next in C: Near 10 token/s on a Laptop CPU</h1>
 
 <p align="center">
-  <strong>Run Qwen3.8-Flash-Next locally on a single laptop CPU.</strong><br>
-  Chat in the terminal or connect your apps through a resident OpenAI-compatible API.<br>
-  Native C inference with no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.
+  <strong>Near 10 token/s on a single laptop CPU, with exact batch verification.</strong><br>
+  Run the 125B-A6B + 51B PLE model in native C: no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.<br>
+  Chat in the terminal or connect your apps through a resident OpenAI-compatible API.
 </p>
 
 <table align="center">
   <tr>
+    <td align="center"><strong>9.89 token/s</strong><br>exact batch-4<br>verification throughput</td>
     <td align="center"><strong>125B-A6B</strong><br>main model<br>+ 51B PLE</td>
-    <td align="center"><strong>5.03 token/s</strong><br>best resident chat<br>on a 32 GB x86 laptop</td>
-    <td align="center"><strong>0.199 s/token</strong><br>best measured<br>resident TPOT</td>
+    <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>resident chat TPOT</td>
     <td align="center"><strong>8.99 GiB</strong><br>measured peak RSS<br>at context 2,048</td>
     <td align="center"><strong>No added approximation</strong><br>optimized paths preserve<br>the selected GGUF's results</td>
   </tr>
@@ -121,8 +121,9 @@ These are observed wall-clock values, not estimates:
 | workload | TTFT / total | TPOT | throughput | peak RSS |
 |---|---:|---:|---:|---:|
 | resident API: 23-token prompt, 16-token output | **3.731 s** | **0.199 s/token** | **5.03 token/s** | - |
+| exact batch-4 verification, 4 positions | **0.405 s total** | - | **9.89 positions/s** | **6.55 GiB** |
 | fixed 16-position token-major forward | 3.216 s total | - | **4.98 positions/s** | - |
-| resident batch-4 prefill, fixed 16 positions | 2.191 s total | - | **7.30 positions/s** | - |
+| batch-4 prefill, fixed 16 positions | 1.789 s total | - | **8.94 positions/s** | - |
 | 16-token one-shot, context 2,048 | - | - | - | **8.99 GiB** |
 
 Reference environment: Intel Core i5-1340P laptop, 32 GB host memory, Windows
@@ -131,6 +132,13 @@ WSL2 ext4 filesystem, warm model pages, `OMP_WAIT_POLICY=ACTIVE` and greedy
 inference. Power mode,
 temperature, page-cache state and background programs materially affect CPU
 results.
+
+The near-10 result is aggregate throughput for four positions evaluated in one
+exact batch, not single-conversation TPOT. The benchmark first computes a
+token-by-token reference, resets the model, and reports speed only when all
+four greedy IDs and the complete final logits are byte-identical. It uses a
+256-token capacity and a larger Q8_0 repack arena; normal chat keeps the more
+memory-efficient defaults.
 
 In a representative component profile, each token-major position used about
 0.077 s MoE, 0.087 s attention/GDN, 0.053 s hyper-connection and 0.010 s
@@ -143,6 +151,12 @@ Run the fixed reproducible workload:
 
 ```bash
 ./scripts/benchmark-qwen4.sh
+```
+
+Run the correctness-gated batch throughput benchmark:
+
+```bash
+./scripts/benchmark-qwen4-batch.sh
 ```
 
 The benchmark uses active OpenMP waiting while a request is running. Normal
@@ -177,6 +191,15 @@ project-specific work includes:
 - **Recurrence-safe batch-4 prefill.** Hyper-Connection and GDN projections
   share weight reads while PLE, convolution, DeltaNet and attention state
   advance in exact token order.
+- **Cross-token GDN state traversal.** One OpenMP team advances four tokens in
+  sequence inside each independent channel/head, replacing hundreds of short
+  fork/barrier cycles without reordering recurrent updates.
+- **Fused batch full attention.** Q/K/V/O weights serve four causal positions
+  per pass; KV writes happen first, then each head advances the four positions
+  in exact order inside one parallel region.
+- **Two-dimensional Q8_0 reuse.** A block-major weight load updates eight
+  output rows across four token lanes, retaining an independent accumulator
+  and the original FMA order for every result.
 - **Quantized-input reuse and measured prefetch gating.** An activation is
   quantized once for compatible projections; immediate expert read-ahead is
   disabled by default after paired hot-page measurements showed a regression.

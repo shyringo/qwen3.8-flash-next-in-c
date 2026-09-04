@@ -53,6 +53,15 @@ formats or ideas, and project-specific engineering.
   projections while convolution, DeltaNet, PLE and causal attention advance
   in token order. Group routed tokens by expert, evaluate the expert union in
   parallel, then accumulate results in each token's original route-slot order.
+- **Cross-token GDN state traversal.** Keep recurrence sequential inside each
+  independent channel and head while one OpenMP team advances four positions,
+  removing six short parallel-region boundaries per GDN layer.
+- **Fused batch full attention.** Quantize four inputs once, share Q/K/V/O
+  weight reads, write all causal KV rows, then let each head advance the four
+  positions in order inside one parallel region.
+- **Q8_0 row-and-token reuse.** A block-major Q8_0 load updates eight output
+  rows for four token lanes with separate accumulators. Each result retains the
+  original column order and is byte-identical to the scalar-layout path.
 - **Measured prefetch gating.** Immediate expert read-ahead is available for
   cold-storage experiments through `Q4_PREFETCH=1`, but stays off by default
   because paired hot-page runs showed that syscall overhead outweighed its
@@ -70,6 +79,7 @@ formats or ideas, and project-specific engineering.
 On the reference laptop, a resident API request with 23 prompt tokens and 16
 output tokens reached TTFT 3.731 s and TPOT 0.199 s/token (5.03 token/s) after
 a different representative warm-up request. A fixed 16-position token-major
-forward reached 4.98 positions/s, while resident batch-4 prefill reached 7.30
-positions/s. Performance remains sensitive to temperature, background load
-and page-cache state.
+forward reached 4.98 positions/s. The optimized batch-4 verifier reached 9.89
+positions/s and the fixed 16-position batch prefill reached 8.94 positions/s.
+Performance remains sensitive to temperature, background load and page-cache
+state.

@@ -3319,6 +3319,69 @@ int q38_tensor_gemm_f32(float *output, const float *input,
     const uint64_t row_bytes = input_length / block_elements * block_bytes;
     const uint64_t rows = tensor->shape[1];
 #if defined(__AVX2__) && defined(__FMA__)
+    if (batch_size == 4u && tensor->type == Q38_GGML_Q8_0 &&
+        tensor->q8_0_repack && rows >= Q38_Q8_0_ROW_GROUP &&
+        !getenv("Q38_DISABLE_Q8_REPACK_USE")) {
+        const uint64_t blocks = input_length / 32u;
+        const uint64_t groups = rows / Q38_Q8_0_ROW_GROUP;
+        const uint8_t *repacked = (const uint8_t *)tensor->q8_0_repack;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) if(groups >= 4u)
+#endif
+        for (uint64_t group = 0; group < groups; ++group) {
+            __m256 sums[4] = {
+                _mm256_setzero_ps(), _mm256_setzero_ps(),
+                _mm256_setzero_ps(), _mm256_setzero_ps()
+            };
+            for (uint64_t block = 0; block < blocks; ++block) {
+                const uint8_t *packed = repacked +
+                    (group * blocks + block) *
+                    Q38_Q8_0_GROUP_BLOCK_BYTES;
+#if defined(__F16C__)
+                const __m256 scales = _mm256_cvtph_ps(
+                    _mm_loadu_si128((const __m128i *)packed));
+#else
+                const __m256 scales = _mm256_set_ps(
+                    q38_f16_to_f32(q38_load_u16(packed + 14u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 12u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 10u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 8u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 6u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 4u)),
+                    q38_f16_to_f32(q38_load_u16(packed + 2u)),
+                    q38_f16_to_f32(q38_load_u16(packed)));
+#endif
+                for (uint32_t column = 0; column < 32u; ++column) {
+                    uint64_t bytes;
+                    memcpy(&bytes, packed + 16u +
+                           column * Q38_Q8_0_ROW_GROUP, sizeof(bytes));
+                    const __m256 quants = _mm256_cvtepi32_ps(
+                        _mm256_cvtepi8_epi32(
+                            _mm_cvtsi64_si128((long long)bytes)));
+                    const __m256 weights = _mm256_mul_ps(scales, quants);
+                    for (uint32_t token = 0; token < 4u; ++token)
+                        sums[token] = _mm256_fmadd_ps(
+                            weights,
+                            _mm256_set1_ps(input[
+                                (uint64_t)token * input_length +
+                                block * 32u + column]),
+                            sums[token]);
+                }
+            }
+            for (uint32_t token = 0; token < 4u; ++token)
+                _mm256_storeu_ps(output + (uint64_t)token * rows +
+                                 group * Q38_Q8_0_ROW_GROUP, sums[token]);
+        }
+        for (uint64_t row = groups * Q38_Q8_0_ROW_GROUP;
+             row < rows; ++row) {
+            const uint8_t *weights = tensor->data + row * row_bytes;
+            for (uint32_t token = 0; token < 4u; ++token)
+                output[(uint64_t)token * rows + row] = q38_dot_row(
+                    weights, input + (uint64_t)token * input_length,
+                    input_length, tensor->type);
+        }
+        return 1;
+    }
     if (batch_size >= 4u && (tensor->type == Q38_GGML_F32 ||
                             tensor->type == Q38_GGML_Q8_0 ||
                             tensor->type == Q38_GGML_IQ4_NL)) {

@@ -55,6 +55,12 @@ used to identify the Qwen4-specific sigmoid GDN output gate.
 
 - Sequential and default batch-4 layer-major evaluation produce byte-identical
   full logits for the fixed 16-token prompt.
+- `qwen4-batch-bench` first records a token-major reference and then requires
+  all four greedy IDs plus the complete final-logit buffer to be byte-identical
+  before reporting batch throughput.
+- Cross-token GDN traversal, fused short-context full attention, shared-expert
+  overlap and the Q8_0 8-row by 4-token kernel preserve the native full-logit
+  SHA byte for byte.
 - Reusing one Q8_K activation across projections is byte-identical to repeated
   quantization.
 - Expert-level dispatch, expert-union batching, selective Q8_0 repacking,

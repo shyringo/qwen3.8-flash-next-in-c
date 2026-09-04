@@ -1,16 +1,16 @@
-<h1 align="center">Qwen3.8-Flash-Next in C：笔记本 CPU 推理</h1>
+<h1 align="center">Qwen3.8-Flash-Next in C：笔记本 CPU 接近 10 token/s</h1>
 
 <p align="center">
-  <strong>只用一颗笔记本 CPU，在本地运行 Qwen3.8-Flash-Next。</strong><br>
-  可以直接在终端聊天，也可以通过常驻的 OpenAI 兼容接口接入应用。<br>
-  原生 C 语言推理，无需 GPU、CUDA、Python、PyTorch、权重转换或其他推理框架。
+  <strong>只用一颗笔记本 CPU，精确 batch 验证吞吐接近 10 token/s。</strong><br>
+  原生 C 语言运行 125B-A6B + 51B PLE：无需 GPU、CUDA、Python、PyTorch、权重转换或其他推理框架。<br>
+  可以直接在终端聊天，也可以通过常驻的 OpenAI 兼容接口接入应用。
 </p>
 
 <table align="center">
   <tr>
+    <td align="center"><strong>9.89 token/s</strong><br>batch-4 精确<br>验证吞吐</td>
     <td align="center"><strong>125B-A6B</strong><br>主模型参数<br>另含 51B PLE</td>
-    <td align="center"><strong>5.03 token/s</strong><br>32 GB x86 笔记本<br>常驻聊天最优实测</td>
-    <td align="center"><strong>0.199 s/token</strong><br>常驻接口<br>最优 TPOT</td>
+    <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>常驻聊天 TPOT</td>
     <td align="center"><strong>8.99 GiB</strong><br>2,048 上下文<br>实测峰值内存</td>
     <td align="center"><strong>不增加近似误差</strong><br>所有优化路径保持<br>所选 GGUF 的推理结果</td>
   </tr>
@@ -113,14 +113,20 @@ WSL2 默认把模型放在 Linux 文件系统里的
 | 测试负载 | TTFT / 总耗时 | TPOT | 生成速度 | 峰值内存 |
 |---|---:|---:|---:|---:|
 | 常驻接口：23-token 输入，16-token 输出 | **3.731 s** | **0.199 s/token** | **5.03 token/s** | - |
+| batch-4 精确验证，4 个位置 | **总计 0.405 s** | - | **9.89 position/s** | **6.55 GiB** |
 | 固定 16-position 逐 token 前向 | 总计 3.216 s | - | **4.98 position/s** | - |
-| 常驻 batch-4 prefill，固定 16 positions | 总计 2.191 s | - | **7.30 position/s** | - |
+| batch-4 prefill，固定 16 positions | 总计 1.789 s | - | **8.94 position/s** | - |
 | 16-token 单次推理，2,048 上下文 | - | - | - | **8.99 GiB** |
 
 实测环境：Intel Core i5-1340P 笔记本、32 GB 主机内存、Windows 11、WSL2
 Ubuntu 22.04、GCC 11.4、11 个计算线程、WSL2 ext4 上的固定模型分片、
 已在内存中的模型页面、`OMP_WAIT_POLICY=ACTIVE` 和贪心推理。供电模式、温度、页面缓存和后台程序都会
 明显影响 CPU 实测结果。
+
+接近 10 的数据是一次精确计算 4 个位置时的总吞吐，不是单会话 TPOT。
+基准会先逐 token 计算参考结果，再重置模型；只有 4 个 greedy token ID 和最终
+248,320 维完整 logits 全部逐字节一致，才会报告速度。该测试使用 256-token
+容量和更大的 Q8_0 重排内存；普通聊天仍使用更省内存的默认配置。
 
 一组代表性组件分析中，逐 token 路径每个位置约包含：MoE 0.077 秒、
 Attention/GDN 0.087 秒、Hyper-Connection 0.053 秒、输出头 0.010 秒。
@@ -132,6 +138,12 @@ Attention/GDN 0.087 秒、Hyper-Connection 0.053 秒、输出头 0.010 秒。
 
 ```bash
 ./scripts/benchmark-qwen4.sh
+```
+
+运行带正确性检查的 batch 吞吐基准：
+
+```bash
+./scripts/benchmark-qwen4-batch.sh
 ```
 
 基准测试会在请求运行期间使用 OpenMP active waiting。普通终端聊天和常驻服务
@@ -160,6 +172,12 @@ Attention/GDN 0.087 秒、Hyper-Connection 0.053 秒、输出头 0.010 秒。
   prediction 和 update 每次处理 8 列。
 - **保持递归顺序的 batch-4 prefill。** Hyper-Connection 和 GDN 投影复用权重
   读取，PLE、卷积、DeltaNet 和注意力状态仍严格按 token 顺序推进。
+- **跨 token GDN 状态推进。** 每个独立 channel/head 在同一个 OpenMP 团队里
+  依次推进 4 个 token，减少数百次短并行区同步，不改变递归更新顺序。
+- **全注意力 batch 融合。** Q/K/V/O 权重一次服务 4 个因果位置；先写入 KV，
+  再由每个 head 在一个并行区内依次推进 4 个位置。
+- **Q8_0 行与 token 双维复用。** 每次 block-major 权重加载同时更新 8 个输出行
+  和 4 个 token lane，每个结果使用独立累加器并保持原始 FMA 顺序。
 - **量化输入复用与实测预读门控。** 同一份激活只量化一次，供兼容的投影共用；
   即时专家预读经成对热页实测会变慢，因此默认关闭，仅保留实验开关。
 - **跨轮次精确前缀复用。** 常驻接口在 prefill 后保存递归状态、PLE、注意力和
