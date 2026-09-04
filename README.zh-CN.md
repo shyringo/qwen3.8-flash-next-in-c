@@ -1,7 +1,7 @@
-<h1 align="center">Qwen3.8-Flash-Next in C：笔记本 CPU 接近 10 token/s</h1>
+<h1 align="center">Qwen3.8-Flash-Next in C：200B 以下最强模型，笔记本 CPU 接近 10 token/s</h1>
 
 <p align="center">
-  <strong>只用一颗笔记本 CPU，精确 batch 验证吞吐接近 10 token/s。</strong><br>
+  <strong>单颗笔记本 CPU 运行 200B 以下最强模型，精确 batch 验证吞吐接近 10 token/s。</strong><br>
   原生 C 语言运行 125B-A6B + 51B PLE：无需 GPU、CUDA、Python、PyTorch、权重转换或其他推理框架。<br>
   可以直接在终端聊天，也可以通过常驻的 OpenAI 兼容接口接入应用。
 </p>
@@ -9,12 +9,16 @@
 <table align="center">
   <tr>
     <td align="center"><strong>9.89 token/s</strong><br>batch-4 精确<br>验证吞吐</td>
-    <td align="center"><strong>125B-A6B</strong><br>主模型参数<br>另含 51B PLE</td>
+    <td align="center"><strong>200B 以下最强模型</strong><br>125B-A6B 主模型<br>另含 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>常驻聊天 TPOT</td>
     <td align="center"><strong>8.99 GiB</strong><br>2,048 上下文<br>实测峰值内存</td>
     <td align="center"><strong>不增加近似误差</strong><br>所有优化路径保持<br>所选 GGUF 的推理结果</td>
   </tr>
 </table>
+
+Qwen3.8-Flash-Next 在当前
+[Artificial Analysis Intelligence Index](https://artificialanalysis.ai/zh/models/qwen3-8-flash-next)
+中得分 56，是总参数量 200B 以下得分最高的模型。
 
 <p align="center">
   <a href="https://github.com/shyringo/qwen3.8-flash-next-in-c/actions/workflows/ci.yml"><img src="https://github.com/shyringo/qwen3.8-flash-next-in-c/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
