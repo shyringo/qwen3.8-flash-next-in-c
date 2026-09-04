@@ -1,7 +1,7 @@
-<h1 align="center">Qwen3.8-Flash-Next in C: The Strongest Model Under 200B, Near 10 token/s on a Laptop CPU</h1>
+<h1 align="center">Qwen3.8-Flash-Next in C: The Best Model Under 200B, Near 10 token/s on a Laptop CPU</h1>
 
 <p align="center">
-  <strong>Run the strongest model under 200B near 10 token/s on a single laptop CPU, with exact batch verification.</strong><br>
+  <strong>Run the best model under 200B near 10 token/s on a single laptop CPU, with exact batch verification.</strong><br>
   Run the 125B-A6B + 51B PLE model in native C: no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.<br>
   Chat in the terminal or connect your apps through a resident OpenAI-compatible API.
 </p>
@@ -9,7 +9,7 @@
 <table align="center">
   <tr>
     <td align="center"><strong>9.89 token/s</strong><br>exact batch-4<br>verification throughput</td>
-    <td align="center"><strong>Strongest under 200B</strong><br>125B-A6B main model<br>+ 51B PLE</td>
+    <td align="center"><strong>Best under 200B</strong><br>125B-A6B main model<br>+ 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>resident chat TPOT</td>
     <td align="center"><strong>8.99 GiB</strong><br>measured peak RSS<br>at context 2,048</td>
     <td align="center"><strong>No added approximation</strong><br>optimized paths preserve<br>the selected GGUF's results</td>
