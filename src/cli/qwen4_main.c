@@ -24,6 +24,7 @@ typedef struct {
     const char *prompt;
     const char *system;
     uint32_t context;
+    uint32_t memory_gib;
     uint32_t max_tokens;
     uint64_t seed;
     float temperature;
@@ -99,6 +100,9 @@ static int parse_options(int argc, char **argv, Options *options)
             options->system = argv[++i];
         else if (strcmp(argv[i], "--context") == 0 && i + 1 < argc) {
             if (!parse_u32(argv[++i], &options->context)) return 0;
+        } else if (strcmp(argv[i], "--memory-gib") == 0 && i + 1 < argc) {
+            if (!parse_u32(argv[++i], &options->memory_gib) ||
+                !options->memory_gib) return 0;
         } else if (strcmp(argv[i], "--max-tokens") == 0 && i + 1 < argc) {
             if (!parse_u32(argv[++i], &options->max_tokens)) return 0;
         } else if (strcmp(argv[i], "--temperature") == 0 && i + 1 < argc) {
@@ -124,11 +128,35 @@ static void usage(const char *program)
         "  --prompt TEXT       run one request; omit for interactive chat\n"
         "  --system TEXT       system instruction\n"
         "  --context N         context capacity (default: 8192)\n"
+        "  --memory-gib N      available RAM budget (auto-detected)\n"
         "  --max-tokens N      output limit (default: 256)\n"
         "  --temperature N     0 for greedy (default: 0)\n"
         "  --thinking          enable visible reasoning\n"
         "  --no-thinking       answer directly (default)\n"
         "  --server PORT       loopback OpenAI-compatible API\n", program);
+}
+
+static uint32_t physical_memory_gib(void)
+{
+    const long pages = sysconf(_SC_PHYS_PAGES);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0) return 0u;
+    const uint64_t bytes = (uint64_t)pages * (uint64_t)page_size;
+    const uint64_t gib = UINT64_C(1) << 30;
+    return bytes > UINT32_MAX * gib
+         ? UINT32_MAX : (uint32_t)((bytes + gib - 1u) / gib);
+}
+
+static void configure_memory_policy(const Options *options)
+{
+    const uint32_t budget = options->memory_gib
+                          ? options->memory_gib : physical_memory_gib();
+    if (budget && budget <= 10u && !getenv("Q4_LOW_MEMORY")) {
+        (void)setenv("Q4_LOW_MEMORY", "1", 0);
+        fprintf(stderr,
+                "qwen4: low-memory weight streaming enabled (%u GiB budget)\n",
+                budget);
+    }
 }
 
 static int render_prompt(Buffer *prompt, const Buffer *history,
@@ -669,6 +697,7 @@ int main(int argc, char **argv)
         usage(argv[0]);
         return argc > 1 && strcmp(argv[1], "--help") == 0 ? 0 : 2;
     }
+    configure_memory_policy(&options);
     Q4Model *model = q4_model_open_gguf(options.model, options.context);
     Q38Tokenizer *tokenizer = q38_tokenizer_open_gguf(options.model);
     if (!model || !tokenizer) {

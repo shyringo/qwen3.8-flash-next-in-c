@@ -27,6 +27,9 @@ formats or ideas, and project-specific engineering.
 - **Metadata-first split GGUF loading.** Treat a zero-tensor first shard as the
   authoritative tokenizer/configuration source and resolve tensors across all
   read-only shard mappings without concatenation.
+- **Bounded-memory weight streaming.** Under an 8 GiB budget, skip optional
+  Q8_0 repacks and discard clean mapped pages after each layer. The kernel math
+  and selected GGUF stay unchanged while resident memory remains bounded.
 - **On-demand PLE row decoding.** Compute sixteen 64-bit n-gram hashes and read
   only their 160-value IQ4_NL rows from a 26.82 GiB table.
 - **Incremental QSA block indexing.** Keep only each layer's four raw tail

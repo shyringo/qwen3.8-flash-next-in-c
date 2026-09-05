@@ -11,7 +11,7 @@
     <td align="center"><strong>9.89 token/s</strong><br>exact batch-4<br>verification throughput</td>
     <td align="center"><strong>Best under 200B</strong><br>125B-A6B main model<br>+ 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>resident chat TPOT</td>
-    <td align="center"><strong>12 GB RAM</strong><br>practical minimum<br>8.99 GiB measured peak</td>
+    <td align="center"><strong>8 GB RAM</strong><br>minimum path<br>selected automatically</td>
     <td align="center"><strong>No added approximation</strong><br>optimized paths preserve<br>the selected GGUF's results</td>
   </tr>
 </table>
@@ -94,6 +94,16 @@ QWEN4_CONTEXT=16384 ./qwen4.sh
 QWEN4_THREADS=8 ./qwen4.sh
 ```
 
+Set the available memory budget explicitly when needed:
+
+```bash
+./qwen4.sh --memory-gib 8
+```
+
+Machines with about 8 GB RAM automatically use the same bounded-memory weight
+streaming path. It preserves the selected GGUF's results while trading speed
+for lower residency.
+
 The default context is 8,192 tokens. QSA keeps attention work bounded beyond
 2,048 tokens; configured capacity may reach the model's 262,144-token limit
 when enough memory is available.
@@ -104,9 +114,11 @@ when enough memory is available.
   use WSL2.
 - At least 75 GB of free disk space for the pinned split GGUF and download
   headroom.
-- 12 GB RAM is the practical minimum recommendation. Peak RSS measured 8.99
-  GiB at a 2,048-token context. Configured capacity adds about 51 KiB of
-  runtime state per token.
+- 8 GB RAM is the minimum supported path. It is selected automatically on
+  low-memory machines or explicitly with `--memory-gib 8`; a 2,048-context,
+  16-token run measured 598 MiB peak RSS. At least 12 GB is recommended for
+  the faster default path. Configured capacity adds about 51 KiB of runtime
+  state per token.
 - An x86-64 CPU with AVX2 is recommended for the fastest kernels. A tested
   portable scalar build is available for other 64-bit POSIX CPUs.
 
@@ -125,6 +137,7 @@ These are observed wall-clock values, not estimates:
 | workload | TTFT / total | TPOT | throughput | peak RSS |
 |---|---:|---:|---:|---:|
 | resident API: 23-token prompt, 16-token output | **3.731 s** | **0.199 s/token** | **5.03 token/s** | - |
+| 8 GB path: 19-token prompt, 16-token output | **11.453 s** | **2.310 s/token** | **0.43 token/s** | **598 MiB** |
 | exact batch-4 verification, 4 positions | **0.405 s total** | - | **9.89 positions/s** | **6.55 GiB** |
 | fixed 16-position token-major forward | 3.216 s total | - | **4.98 positions/s** | - |
 | batch-4 prefill, fixed 16 positions | 1.789 s total | - | **8.94 positions/s** | - |
@@ -177,6 +190,9 @@ project-specific work includes:
 - **Metadata-first split GGUF loading.** A metadata-only first shard supplies
   configuration and tokenizer data while tensors resolve across read-only
   shard mappings without concatenation or conversion.
+- **Bounded-memory weight streaming.** The 8 GB path skips optional weight
+  repacks and releases clean mapped pages after each layer, keeping only the
+  active working set resident without changing model arithmetic.
 - **On-demand 51B PLE decoding.** Sixteen n-gram hashes select only the needed
   IQ4_NL rows from the 26.82 GiB per-layer embedding table.
 - **Incremental QSA block indexing.** Four-token key blocks are pooled,

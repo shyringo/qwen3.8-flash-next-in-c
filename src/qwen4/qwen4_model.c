@@ -1,3 +1,9 @@
+#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "qwen4_model.h"
@@ -1930,6 +1936,17 @@ static int layer_forward(Q4Model *model, uint32_t layer,
     return 1;
 }
 
+static void discard_mapped_weight_pages(Q4Model *model)
+{
+    if (!getenv("Q4_LOW_MEMORY")) return;
+    for (size_t shard = 0; shard < model->gguf.shard_count; ++shard) {
+        const Q38GGUF *gguf = &model->gguf.shards[shard];
+        if (gguf->mapping && gguf->mapping_size <= SIZE_MAX)
+            (void)madvise((void *)gguf->mapping,
+                          (size_t)gguf->mapping_size, MADV_DONTNEED);
+    }
+}
+
 static int layer_forward_batch(Q4Model *model, uint32_t layer,
                                float *const *residual,
                                uint32_t base_position, uint32_t batch_size)
@@ -2082,7 +2099,7 @@ Q4Model *q4_model_open_gguf(const char *first_shard, uint32_t context_length)
     Q4Model *model = (Q4Model *)calloc(1u, sizeof(*model));
     if (!model) return NULL;
     if (!q4_gguf_set_open(&model->gguf, first_shard, 0)) goto fail;
-    if (!getenv("Q4_DISABLE_Q8_REPACK")) {
+    if (!getenv("Q4_DISABLE_Q8_REPACK") && !getenv("Q4_LOW_MEMORY")) {
         int repacked = 1;
         for (size_t shard = 0; shard < model->gguf.shard_count; ++shard)
             repacked &= q38_prepare_q8_0_repacks(&model->gguf.shards[shard]);
@@ -2407,6 +2424,7 @@ int q4_model_forward_token(Q4Model *model, uint32_t token_id,
         }
         if (!layer_forward(model, layer, model->residual,
                            model->position)) return 0;
+        discard_mapped_weight_pages(model);
     }
     const double head_started = getenv("Q4_PROFILE") ? now_seconds() : 0.0;
     if (!hc_mix(model, &model->output_hc, model->residual,
@@ -2414,6 +2432,7 @@ int q4_model_forward_token(Q4Model *model, uint32_t token_id,
         !project(model, model->scratch.logits, model->scratch.mixed,
                  Q4_HIDDEN, model->output)) return 0;
     apply_scale(model->scratch.logits, Q4_VOCAB, model->output_scale, 0u);
+    discard_mapped_weight_pages(model);
     trace_vector("result_norm", UINT32_MAX,
                  model->scratch.mixed, Q4_HIDDEN);
     if (getenv("Q4_PROFILE")) {
@@ -2471,6 +2490,7 @@ int q4_model_prefill(Q4Model *model, const uint32_t *tokens,
                 free(residuals); return 0;
             }
         }
+        discard_mapped_weight_pages(model);
     }
     float *last = residuals + (uint64_t)(token_count - 1u) * Q4_HC_DIM;
     const int ok = hc_mix(model, &model->output_hc, last,
@@ -2479,6 +2499,7 @@ int q4_model_prefill(Q4Model *model, const uint32_t *tokens,
                 Q4_HIDDEN, model->output);
     if (ok) apply_scale(model->scratch.logits, Q4_VOCAB,
                         model->output_scale, 0u);
+    if (ok) discard_mapped_weight_pages(model);
     free(residuals);
     if (!ok) return 0;
     model->position += token_count;
@@ -2528,6 +2549,7 @@ int q4_model_verify_greedy(Q4Model *model, const uint32_t *tokens,
             free(residuals);
             return 0;
         }
+        discard_mapped_weight_pages(model);
     }
     float *chunk[Q4_BATCH_TILE];
     for (uint32_t token = 0; token < token_count; ++token)
@@ -2549,6 +2571,7 @@ int q4_model_verify_greedy(Q4Model *model, const uint32_t *tokens,
             memcpy(model->scratch.logits, row,
                    Q4_VOCAB * sizeof(float));
     }
+    if (ok) discard_mapped_weight_pages(model);
     free(residuals);
     if (!ok) return 0;
     model->position += token_count;

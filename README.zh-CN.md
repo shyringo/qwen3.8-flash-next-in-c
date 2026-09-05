@@ -11,7 +11,7 @@
     <td align="center"><strong>9.89 token/s</strong><br>batch-4 精确<br>验证吞吐</td>
     <td align="center"><strong>200B 以下最强模型</strong><br>125B-A6B 主模型<br>另含 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>常驻聊天 TPOT</td>
-    <td align="center"><strong>12 GB 内存</strong><br>建议最低配置<br>实测峰值 8.99 GiB</td>
+    <td align="center"><strong>最低 8 GB 内存</strong><br>低内存路径<br>自动启用</td>
     <td align="center"><strong>不增加近似误差</strong><br>所有优化路径保持<br>所选 GGUF 的推理结果</td>
   </tr>
 </table>
@@ -92,6 +92,15 @@ QWEN4_CONTEXT=16384 ./qwen4.sh
 QWEN4_THREADS=8 ./qwen4.sh
 ```
 
+需要时可以直接指定可用内存：
+
+```bash
+./qwen4.sh --memory-gib 8
+```
+
+约 8 GB 内存的机器会自动启用同一条有界权重流式读取路径。推理结果保持不变，
+代价是速度低于内存更充足时的默认路径。
+
 默认上下文为 8,192 token。超过 2,048 token 后，QSA 会把注意力计算量
 限制在固定预算内。内存足够时，最大可以配置到模型原生的 262,144 token。
 
@@ -99,8 +108,10 @@ QWEN4_THREADS=8 ./qwen4.sh
 
 - 64 位 POSIX 系统、C 语言编译器、`make` 和 `curl`。Windows 请使用 WSL2。
 - 至少预留 75 GB 磁盘空间，用于模型分片和下载过程中的余量。
-- 建议至少 12 GB 内存。2,048-token 上下文的实测峰值为 8.99 GiB；配置容量
-  每增加一个 token，运行时状态约增加 51 KiB。
+- 最低 8 GB 内存可运行。低内存机器会自动选择对应路径，也可以通过
+  `--memory-gib 8` 显式启用；2,048 上下文、16-token 输出的实测峰值为
+  598 MiB。建议 12 GB 以上内存使用速度更快的默认路径。配置容量每增加一个
+  token，运行时状态约增加 51 KiB。
 - 推荐带 AVX2 的 x86-64 CPU，以使用最快的内核。其他 64 位 POSIX CPU
   可以使用已经测试过的通用标量版本。
 
@@ -117,6 +128,7 @@ WSL2 默认把模型放在 Linux 文件系统里的
 | 测试负载 | TTFT / 总耗时 | TPOT | 生成速度 | 峰值内存 |
 |---|---:|---:|---:|---:|
 | 常驻接口：23-token 输入，16-token 输出 | **3.731 s** | **0.199 s/token** | **5.03 token/s** | - |
+| 8 GB 路径：19-token 输入，16-token 输出 | **11.453 s** | **2.310 s/token** | **0.43 token/s** | **598 MiB** |
 | batch-4 精确验证，4 个位置 | **总计 0.405 s** | - | **9.89 position/s** | **6.55 GiB** |
 | 固定 16-position 逐 token 前向 | 总计 3.216 s | - | **4.98 position/s** | - |
 | batch-4 prefill，固定 16 positions | 总计 1.789 s | - | **8.94 position/s** | - |
@@ -161,6 +173,8 @@ Attention/GDN 0.087 秒、Hyper-Connection 0.053 秒、输出头 0.010 秒。
 
 - **元数据优先的分片 GGUF 加载。** 第一分片只有元数据和 tokenizer 也能
   正常工作；所有 tensor 直接从只读分片映射中定位，无需拼接或转换文件。
+- **有界内存权重流式读取。** 8 GB 路径跳过可选权重重排，并在每层结束后
+  释放干净的映射页面，只保留当前工作集，不改变模型计算。
 - **51B PLE 按需解码。** 每个 token 计算 16 个 n-gram 哈希，只解码
   26.82 GiB PLE 表里真正用到的 IQ4_NL 行。
 - **增量 QSA 块索引。** 每 4 个 key 只做一次池化、归一化和 RoPE，用固定
