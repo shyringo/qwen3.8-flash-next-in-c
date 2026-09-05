@@ -116,7 +116,7 @@ when enough memory is available.
   headroom.
 - 8 GB RAM is the minimum supported path. It is selected automatically on
   low-memory machines or explicitly with `--memory-gib 8`; a 2,048-context,
-  16-token run measured 598 MiB peak RSS. At least 12 GB is recommended for
+  16-token run measured 596 MiB peak RSS. At least 12 GB is recommended for
   the faster default path. Configured capacity adds about 51 KiB of runtime
   state per token.
 - An x86-64 CPU with AVX2 is recommended for the fastest kernels. A tested
@@ -137,7 +137,7 @@ These are observed wall-clock values, not estimates:
 | workload | TTFT / total | TPOT | throughput | peak RSS |
 |---|---:|---:|---:|---:|
 | resident API: 23-token prompt, 16-token output | **3.731 s** | **0.199 s/token** | **5.03 token/s** | - |
-| 8 GB path: 19-token prompt, 16-token output | **11.453 s** | **2.310 s/token** | **0.43 token/s** | **598 MiB** |
+| 8 GB path: 19-token prompt, 16-token output | **4.156 s** | **0.611 s/token** | **1.64 token/s** | **596 MiB** |
 | exact batch-4 verification, 4 positions | **0.405 s total** | - | **9.89 positions/s** | **6.55 GiB** |
 | fixed 16-position token-major forward | 3.216 s total | - | **4.98 positions/s** | - |
 | batch-4 prefill, fixed 16 positions | 1.789 s total | - | **8.94 positions/s** | - |
