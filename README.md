@@ -11,7 +11,7 @@
     <td align="center"><strong>9.89 token/s</strong><br>exact batch-4<br>verification throughput</td>
     <td align="center"><strong>Best under 200B</strong><br>125B-A6B main model<br>+ 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>resident chat TPOT</td>
-    <td align="center"><strong>8.99 GiB</strong><br>measured peak RSS<br>at context 2,048</td>
+    <td align="center"><strong>12 GB RAM</strong><br>practical minimum<br>8.99 GiB measured peak</td>
     <td align="center"><strong>No added approximation</strong><br>optimized paths preserve<br>the selected GGUF's results</td>
   </tr>
 </table>

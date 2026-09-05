@@ -11,7 +11,7 @@
     <td align="center"><strong>9.89 token/s</strong><br>batch-4 精确<br>验证吞吐</td>
     <td align="center"><strong>200B 以下最强模型</strong><br>125B-A6B 主模型<br>另含 51B PLE</td>
     <td align="center"><strong>5.03 token/s</strong><br>0.199 s/token<br>常驻聊天 TPOT</td>
-    <td align="center"><strong>8.99 GiB</strong><br>2,048 上下文<br>实测峰值内存</td>
+    <td align="center"><strong>12 GB 内存</strong><br>建议最低配置<br>实测峰值 8.99 GiB</td>
     <td align="center"><strong>不增加近似误差</strong><br>所有优化路径保持<br>所选 GGUF 的推理结果</td>
   </tr>
 </table>
