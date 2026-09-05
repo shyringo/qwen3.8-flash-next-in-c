@@ -17,6 +17,9 @@
 #include <strings.h>
 #include <time.h>
 #include <sys/socket.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 #include <unistd.h>
 
 typedef struct {
@@ -138,10 +141,19 @@ static void usage(const char *program)
 
 static uint32_t physical_memory_gib(void)
 {
+#if defined(__APPLE__)
+    uint64_t bytes = 0u;
+    size_t size = sizeof(bytes);
+    if (sysctlbyname("hw.memsize", &bytes, &size, NULL, 0) != 0 ||
+        size != sizeof(bytes)) return 0u;
+#elif defined(_SC_PHYS_PAGES)
     const long pages = sysconf(_SC_PHYS_PAGES);
     const long page_size = sysconf(_SC_PAGESIZE);
     if (pages <= 0 || page_size <= 0) return 0u;
     const uint64_t bytes = (uint64_t)pages * (uint64_t)page_size;
+#else
+    return 0u;
+#endif
     const uint64_t gib = UINT64_C(1) << 30;
     return bytes > UINT32_MAX * gib
          ? UINT32_MAX : (uint32_t)((bytes + gib - 1u) / gib);
