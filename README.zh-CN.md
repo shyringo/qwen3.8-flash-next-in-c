@@ -162,6 +162,9 @@ Attention/GDN 0.087 秒、Hyper-Connection 0.053 秒、输出头 0.010 秒。
 ./scripts/benchmark-qwen4-batch.sh
 ```
 
+欢迎把其他 CPU 的实测结果发到
+[社区 benchmark 汇总](https://github.com/shyringo/qwen3.8-flash-next-in-c/discussions/1)。
+
 基准测试会在请求运行期间使用 OpenMP active waiting。普通终端聊天和常驻服务
 使用 passive waiting，模型空闲时不会让笔记本 CPU 持续满载。
 

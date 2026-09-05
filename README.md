@@ -176,6 +176,9 @@ Run the correctness-gated batch throughput benchmark:
 ./scripts/benchmark-qwen4-batch.sh
 ```
 
+Share results from another CPU in the
+[community benchmark thread](https://github.com/shyringo/qwen3.8-flash-next-in-c/discussions/1).
+
 The benchmark uses active OpenMP waiting while a request is running. Normal
 interactive chat and server launchers use passive waiting so an idle resident
 model does not keep the laptop CPU at 100%.
