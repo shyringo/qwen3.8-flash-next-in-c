@@ -55,6 +55,9 @@ used to identify the Qwen4-specific sigmoid GDN output gate.
 
 - Sequential and default batch-4 layer-major evaluation produce byte-identical
   full logits for the fixed 16-token prompt.
+- The automatic 8 GB path, including skipped optional Q8_0 repacks and
+  per-layer mapped-page release, preserves the same complete-logit SHA. Its
+  batch-4 verifier is also byte-identical to token-major inference.
 - `qwen4-batch-bench` first records a token-major reference and then requires
   all four greedy IDs plus the complete final-logit buffer to be byte-identical
   before reporting batch throughput.
